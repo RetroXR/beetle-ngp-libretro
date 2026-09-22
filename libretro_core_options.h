@@ -52,6 +52,34 @@ struct retro_core_option_v2_definition option_defs_us_v2[] = {
       },
       "english",
    },
+   {
+      "ngp_rtc",
+      "Real-Time Clock",
+      NULL,
+      "Where the console's clock reads its time. 'system' is the host's local time. 'deterministic' starts at 2000-01-01 00:00 and runs with emulated time, so every machine given the same inputs reads the same clock (netplay, replays).",
+      NULL,
+      "system",
+      {
+         { "system",        NULL },
+         { "deterministic", NULL },
+         { NULL, NULL},
+      },
+      "system",
+   },
+   {
+      "ngp_fixed_frames",
+      "Fixed-Window Frames",
+      NULL,
+      "Run every frame for exactly the console's 102485 CPU ticks instead of until the display's vblank, so two cabled units end each frame at the same instant. Netplay turns this on for a cabled pair; there is no reason to otherwise.",
+      NULL,
+      "system",
+      {
+         { "disabled", NULL },
+         { "enabled",  NULL },
+         { NULL, NULL},
+      },
+      "disabled",
+   },
    { NULL, NULL, NULL, NULL, NULL, NULL, {{0}}, NULL },
 };
 
@@ -71,6 +99,28 @@ struct retro_core_option_definition option_defs_us[] = {
          { NULL, NULL},
       },
       "english",
+   },
+   {
+      "ngp_rtc",
+      "Real-Time Clock",
+      "Where the console's clock reads its time. 'system' is the host's local time. 'deterministic' starts at 2000-01-01 00:00 and runs with emulated time.",
+      {
+         { "system",        NULL },
+         { "deterministic", NULL },
+         { NULL, NULL},
+      },
+      "system",
+   },
+   {
+      "ngp_fixed_frames",
+      "Fixed-Window Frames",
+      "Run every frame for exactly 102485 CPU ticks so two cabled units end each frame together (netplay).",
+      {
+         { "disabled", NULL },
+         { "enabled",  NULL },
+         { NULL, NULL},
+      },
+      "disabled",
    },
    { NULL, NULL, NULL, { NULL, NULL }, NULL },
 };

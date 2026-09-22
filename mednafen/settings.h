@@ -9,6 +9,8 @@ extern "C" {
 #endif
 
 extern uint32_t setting_ngp_language;
+/* ngp_rtc = deterministic: the RTC runs on emulated time (rtc.c). */
+extern int setting_ngp_rtc_deterministic;
 
 bool MDFN_GetSettingB(const char *name);
 

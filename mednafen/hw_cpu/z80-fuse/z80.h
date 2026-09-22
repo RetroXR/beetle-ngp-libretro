@@ -39,6 +39,8 @@ void z80_reset( void );
 void z80_nmi( void );
 
 void z80_set_interrupt(int set);
+/* The IRQ line as last set; part of the machine state. */
+extern int iline;
 
 int z80_interrupt( void );
 

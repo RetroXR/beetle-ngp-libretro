@@ -31,6 +31,8 @@
 
 int32_t ngpc_soundTS = 0;
 
+/* Not static: Z80_interface.c saves it. A state taken while the TLCS-900 held
+ * the IRQ raised lost it on load, and the sound CPU took a different path. */
 int iline = 0;
 
 void z80_set_interrupt(int set)

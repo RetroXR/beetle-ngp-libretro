@@ -184,5 +184,15 @@ void MDFNNGPCZ80_StateAction(void *data, int load, int data_only)
 
    MDFNSS_StateAction(data, load, data_only, StateRegs, "Z80X", false);
 
+   {
+      /* Optional, so a state from before it was saved still loads. */
+      SFORMAT IrqRegs[] =
+      {
+         { &(iline), sizeof(iline), 0x80000000, "iline" },
+         { 0, 0, 0, 0 }
+      };
+      MDFNSS_StateAction(data, load, data_only, IrqRegs, "Z80I", true);
+   }
+
    z80_state_action(data, load, data_only, "Z80");
 }

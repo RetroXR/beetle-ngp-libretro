@@ -15,6 +15,14 @@
 #include "../mednafen-types.h"
 #include <time.h>
 
+#include "link.h"
+
+/* Set from the ngp_rtc core option. */
+int setting_ngp_rtc_deterministic = 0;
+
+/* 2000-01-01 00:00:00 UTC, where a deterministic clock starts. */
+#define RTC_DETERMINISTIC_EPOCH ((time_t)946684800)
+
 static uint8 rtc_latch[7];
 
 static void update_rtc_latch(void)
@@ -25,8 +33,18 @@ static void update_rtc_latch(void)
    time_t long_time;
 
    //Get the system time
-   time(&long_time);
-   localTime = localtime(&long_time);
+   if (setting_ngp_rtc_deterministic)
+   {
+      /* Emulated seconds, so two machines fed the same inputs agree. */
+      long_time = RTC_DETERMINISTIC_EPOCH
+         + (time_t)(ngp_link_own_clock() / 6144000);
+      localTime = gmtime(&long_time);
+   }
+   else
+   {
+      time(&long_time);
+      localTime = localtime(&long_time);
+   }
    if (localTime)
    {
       low = localTime->tm_year - 100; high = low;             /* Years */

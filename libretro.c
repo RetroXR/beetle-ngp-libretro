@@ -93,6 +93,22 @@ static int32 z80_runtime;
 
 extern int32_t ngpc_soundTS;
 
+static void RunZ80(void)
+{
+   while(z80_runtime > 0)
+   {
+      int z80rantime = Z80_RunOP();
+
+      if (z80rantime < 0) /* Z80 inactive, so take up all run time! */
+      {
+         z80_runtime = 0;
+         break;
+      }
+
+      z80_runtime -= z80rantime << 1;
+   }
+}
+
 static void Emulate(EmulateSpecStruct *espec, int16_t *sound_buf)
 {
    bool MeowMeow        = false;
@@ -106,27 +122,35 @@ static void Emulate(EmulateSpecStruct *espec, int16_t *sound_buf)
 
    ngpc_soundTS         = 0;
 
-   do
+   if (ngp_fixed_frames)
    {
-      int32 timetime = (uint8)TLCS900h_interpret();
-      MeowMeow |= updateTimers(espec->surface, timetime);
-      ngp_link_ran(timetime);
-      z80_runtime += timetime;
+      /* A fixed window (link.h). The frame is a hardware constant, so vblank
+       * stays inside the window and only where it stops moves. */
+      uint32_t ticks = ngp_link_frame_begin(NGP_FRAME_TICKS);
+      uint32_t ran   = 0;
 
-      while(z80_runtime > 0)
+      while (ran < ticks)
       {
-         int z80rantime = Z80_RunOP();
-
-         if (z80rantime < 0) /* Z80 inactive, so take up all run time! */
-         {
-            z80_runtime = 0;
-            break;
-         }
-
-         z80_runtime -= z80rantime << 1;
-
+         int32 timetime = (uint8)TLCS900h_interpret();
+         updateTimers(espec->surface, timetime);
+         ngp_link_ran(timetime);
+         z80_runtime += timetime;
+         ran += timetime;
+         RunZ80();
       }
-   }while(!MeowMeow);
+      ngp_link_frame_end(ran, ticks);
+   }
+   else
+   {
+      do
+      {
+         int32 timetime = (uint8)TLCS900h_interpret();
+         MeowMeow |= updateTimers(espec->surface, timetime);
+         ngp_link_ran(timetime);
+         z80_runtime += timetime;
+         RunZ80();
+      }while(!MeowMeow);
+   }
 
    espec->SoundBufSize = MDFNNGPCSOUND_Flush(sound_buf,
          espec->SoundBufMaxSize);
@@ -325,6 +349,8 @@ void StateAction(StateMem *sm, int load, int data_only)
    int_timer_StateAction(sm, load, data_only);
    BIOSHLE_StateAction(sm, load, data_only);
    FLASH_StateAction(sm, load, data_only);
+   ngp_sio_StateAction(sm, load, data_only);
+   ngp_link_StateAction(sm, load, data_only);
 
    if(load)
    {
@@ -382,6 +408,20 @@ static void check_color_depth(void)
 static void check_variables(void)
 {
    struct retro_variable var = {0};
+
+   var.key   = "ngp_fixed_frames";
+   var.value = NULL;
+   ngp_fixed_frames = false;
+   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value
+         && !strcmp(var.value, "enabled"))
+      ngp_fixed_frames = true;
+
+   var.key   = "ngp_rtc";
+   var.value = NULL;
+   setting_ngp_rtc_deterministic = 0;
+   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value
+         && !strcmp(var.value, "deterministic"))
+      setting_ngp_rtc_deterministic = 1;
 
    var.key   = "ngp_language";
    var.value = NULL;

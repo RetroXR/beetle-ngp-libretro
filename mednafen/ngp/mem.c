@@ -13,6 +13,8 @@
 //---------------------------------------------------------------------------
 
 #include "link.h"
+#include "../state.h"
+#include "../state_helpers.h"
 #include "neopop.h"
 #include "TLCS-900h/TLCS900h_registers.h"
 #include "Z80_interface.h"
@@ -54,6 +56,20 @@ void ngp_sc0buf_received(uint8_t data)
    SC0BUF = data;
 }
 uint8_t COMMStatus;
+
+/* The serial port's registers that live outside I/O RAM. NeoPop never saved
+ * them; with a cable a game writes and reads SC0BUF every byte, so a load that
+ * kept the last run's value replays a different conversation. */
+int ngp_sio_StateAction(void *data, int load, int data_only)
+{
+   SFORMAT StateRegs[] =
+   {
+      SFVARN(SC0BUF, "SC0BUF"),
+      SFVARN(COMMStatus, "COMMStatus"),
+      SFEND
+   };
+   return MDFNSS_StateAction(data, load, data_only, StateRegs, "SIO", true);
+}
 
 /* In very very very rare conditions(like on embedded platforms with 
  * no virtual memory and very limited RAM and malloc happens to 

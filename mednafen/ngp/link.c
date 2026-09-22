@@ -19,6 +19,8 @@
 #include "link.h"
 #include "link_interface.h"
 #include "system.h"
+#include "../state.h"
+#include "../state_helpers.h"
 
 extern retro_log_printf_t log_cb;
 
@@ -78,6 +80,24 @@ static bool rts_unsaid;
 static uint8_t rts_val[RTS_MAX];
 static uint64_t rts_tick[RTS_MAX];
 static unsigned rts_count;
+
+/* Fixed-window frames (ngp_fixed_frames, see link.h). */
+bool ngp_fixed_frames;
+/* The bus tick this window ends on, while one is running. */
+static uint64_t frame_end;
+static bool in_frame;
+/* Ticks the last window ran past its edge: the next one is that much shorter. */
+static uint32_t fixed_over;
+
+/* Whether a message stamped `tick` may be acted on yet. Past the edge of a
+ * fixed window it waits for the next one: every peer has stopped AT the edge,
+ * and what they will say beyond it is not known yet. */
+static bool due(uint64_t tick)
+{
+   if (tick > now)
+      return false;
+   return !(ngp_fixed_frames && in_frame && tick > frame_end);
+}
 
 static void say(enum retro_log_level level, const char *msg, unsigned a, int b)
 {
@@ -195,8 +215,15 @@ static void rendezvous(void)
    uint32_t wake = RETRO_LINK_WAKE_NONE;
    uint64_t grant;
 
+   uint64_t request = now + LINK_GRAIN;
+
    refresh_peers();
-   grant = link_if->advance(link_port, now, now + LINK_GRAIN, now + LINK_GRAIN, &wake);
+   /* Never past the end of a fixed window. A peer that has reached the edge
+    * stops there, having promised a grain beyond it; ask it for more than that
+    * and neither machine moves. */
+   if (ngp_fixed_frames && in_frame && request > frame_end)
+      request = frame_end > now ? frame_end : now;
+   grant = link_if->advance(link_port, now, now + LINK_GRAIN, request, &wake);
    anchored = true;
    pump();
    if (rts_unsaid && peers >= 2)
@@ -231,7 +258,7 @@ static void drop_front(void)
 
 bool ngp_link_arrived(uint8_t *data)
 {
-   if (!link_port || inbox_raised >= inbox_count || inbox_tick[inbox_raised] > now)
+   if (!link_port || inbox_raised >= inbox_count || !due(inbox_tick[inbox_raised]))
       return false;
    *data = inbox[inbox_raised++];
    return true;
@@ -242,14 +269,14 @@ unsigned ngp_link_waiting(void)
    unsigned n = 0;
    if (!link_port)
       return 0;
-   while (n < inbox_count && inbox_tick[n] <= now)
+   while (n < inbox_count && due(inbox_tick[n]))
       n++;
    return n;
 }
 
 bool system_comms_poll(uint8_t *buffer)
 {
-   if (!link_port || inbox_count == 0 || inbox_tick[0] > now)
+   if (!link_port || inbox_count == 0 || !due(inbox_tick[0]))
       return false;
    if (buffer)
       *buffer = inbox[0];
@@ -307,7 +334,7 @@ uint8_t ngp_link_cts(void)
 {
    if (!link_port || peers < 2)
       return 1;
-   while (rts_count > 0 && rts_tick[0] <= now)
+   while (rts_count > 0 && due(rts_tick[0]))
    {
       peer_rts = rts_val[0];
       rts_count--;
@@ -343,4 +370,144 @@ void system_comms_write(uint8_t data)
       line_free = now + LINK_GRAIN;
    send_msg(LINK_MSG_BYTE, data, line_free);
    line_free += LINK_BYTE_TICKS;
+}
+
+uint32_t ngp_link_frame_begin(uint32_t window)
+{
+   uint32_t ticks = window > fixed_over ? window - fixed_over : 1;
+
+   if (!link_port)
+      return ticks;
+   /* A machine the bus is about to anchor afresh (a cable joined, or it has
+    * never called in) runs a whole window: its origin is where it stands now,
+    * so every unit anchored at this edge ends every later window on the very
+    * same bus tick, not give or take each one's last overshoot. */
+   refresh_peers();
+   if (!anchored)
+      ticks = window;
+   frame_end = now + ticks;
+   in_frame = true;
+   /* Meet the peers at the edge, so a cable joined between frames anchors
+    * every machine at the start of the same window. */
+   rendezvous();
+   return ticks;
+}
+
+void ngp_link_frame_end(uint32_t ran, uint32_t ticks)
+{
+   fixed_over = ran > ticks ? ran - ticks : 0;
+   if (!link_port)
+      return;
+   in_frame = false;
+   /* Promise a grain past the edge before stopping at it, so a peer finishing
+    * its own window a few ticks later is not held up by this one. Asking for
+    * where this machine already is is granted at once. */
+   if (peers >= 2)
+      link_if->advance(link_port, now, now + LINK_GRAIN, now, NULL);
+}
+
+uint64_t ngp_link_own_clock(void)
+{
+   return own_clock;
+}
+
+/* The link's half of a savestate. This machine's own clock is its own and is
+ * saved as it stands. Anything stamped on the BUS clock is saved as how far it
+ * lies from `now`, never as a tick: that clock belongs to the session and never
+ * goes backwards, so a state is loaded into a bus that has moved on. What is
+ * still ON the wire, not yet pumped into the inbox, is the frontend's to put
+ * back (LinkCoordinator's group snapshot); what has landed here is ours. */
+int ngp_link_StateAction(void *data, int load, int data_only)
+{
+   int64_t inbox_rel[INBOX_MAX];
+   int64_t rts_rel[RTS_MAX];
+   /* Clamped: a line free or a rendezvous already behind `now` means "now",
+    * and a stale negative distance would make two equal machines' states
+    * differ by nothing but how far the bus clock had run. */
+   int64_t limit_rel = limit > now ? (int64_t)(limit - now) : 0;
+   int64_t line_rel = line_free > now ? (int64_t)(line_free - now) : 0;
+   uint8_t anchored_b = anchored;
+   /* Absolute copies too. Under fixed windows netplay puts the bus back to the
+    * instant the state was taken, so the link clock goes back with it. */
+   uint64_t s_now = now, s_limit = limit, s_line = line_free;
+   uint64_t s_inbox_tick[INBOX_MAX];
+   uint64_t s_rts_tick[RTS_MAX];
+   uint32_t s_peers = peers;
+   uint8_t unsaid_b = rts_unsaid;
+   unsigned i;
+
+   memcpy(s_inbox_tick, inbox_tick, sizeof(s_inbox_tick));
+   memcpy(s_rts_tick, rts_tick, sizeof(s_rts_tick));
+   for (i = 0; i < INBOX_MAX; i++)
+      inbox_rel[i] = i < inbox_count ? (int64_t)(inbox_tick[i] - now) : 0;
+   for (i = 0; i < RTS_MAX; i++)
+      rts_rel[i] = i < rts_count ? (int64_t)(rts_tick[i] - now) : 0;
+
+   {
+      SFORMAT StateRegs[] =
+      {
+         SFVARN(own_clock, "own_clock"),
+         SFVARN(tx_done_at, "tx_done_at"),
+         SFVARN(limit_rel, "limit_rel"),
+         SFVARN(line_rel, "line_rel"),
+         SFVARN(anchored_b, "anchored"),
+         SFARRAYN(inbox, INBOX_MAX, "inbox"),
+         SFARRAY64N((uint64_t *)inbox_rel, INBOX_MAX, "inbox_rel"),
+         SFVARN(inbox_count, "inbox_count"),
+         SFVARN(inbox_raised, "inbox_raised"),
+         SFVARN(local_rts, "local_rts"),
+         SFVARN(peer_rts, "peer_rts"),
+         SFVARN(unsaid_b, "rts_unsaid"),
+         SFARRAYN(rts_val, RTS_MAX, "rts_val"),
+         SFARRAY64N((uint64_t *)rts_rel, RTS_MAX, "rts_rel"),
+         SFVARN(rts_count, "rts_count"),
+         SFVARN(fixed_over, "fixed_over"),
+         SFVARN(s_now, "now"),
+         SFVARN(s_limit, "limit"),
+         SFVARN(s_line, "line_free"),
+         SFVARN(s_peers, "peers"),
+         SFARRAY64N(s_inbox_tick, INBOX_MAX, "inbox_tick"),
+         SFARRAY64N(s_rts_tick, RTS_MAX, "rts_tick"),
+         SFEND
+      };
+      if (!MDFNSS_StateAction(data, load, data_only, StateRegs, "LINK", true))
+         return 0;
+   }
+
+   if (load)
+   {
+      if (inbox_count > INBOX_MAX)
+         inbox_count = INBOX_MAX;
+      if (inbox_raised > inbox_count)
+         inbox_raised = inbox_count;
+      if (rts_count > RTS_MAX)
+         rts_count = RTS_MAX;
+      in_frame = false;
+      if (ngp_fixed_frames)
+      {
+         now = s_now;
+         limit = s_limit;
+         line_free = s_line;
+         memcpy(inbox_tick, s_inbox_tick, sizeof(inbox_tick));
+         memcpy(rts_tick, s_rts_tick, sizeof(rts_tick));
+         if (link_port)
+            peers = s_peers;
+      }
+      else
+      {
+         /* Nothing puts the bus back: the link clock carries on, and what was
+          * in flight lands as far ahead as it was. */
+         for (i = 0; i < inbox_count; i++)
+            inbox_tick[i] = now + inbox_rel[i];
+         for (i = 0; i < rts_count; i++)
+            rts_tick[i] = now + rts_rel[i];
+         limit = now + (limit_rel > 0 ? (uint64_t)limit_rel : 0);
+         line_free = now + (line_rel > 0 ? (uint64_t)line_rel : 0);
+      }
+      anchored = anchored_b != 0;
+      rts_unsaid = unsaid_b != 0;
+      local_rts &= 1;
+      peer_rts &= 1;
+   }
+   return 1;
 }
