@@ -23,6 +23,7 @@ SOURCES_C += \
 	$(CORE_EMU_DIR)/dma.c \
 	$(CORE_EMU_DIR)/gfx.c \
 	$(CORE_EMU_DIR)/interrupt.c \
+	$(CORE_EMU_DIR)/link.c \
 	$(CORE_EMU_DIR)/mem.c \
 	$(CORE_EMU_DIR)/rom.c \
 	$(CORE_EMU_DIR)/system.c \

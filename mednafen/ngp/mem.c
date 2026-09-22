@@ -12,6 +12,7 @@
 //	additional informations.
 //---------------------------------------------------------------------------
 
+#include "link.h"
 #include "neopop.h"
 #include "TLCS-900h/TLCS900h_registers.h"
 #include "Z80_interface.h"
@@ -41,6 +42,17 @@ bool memory_flash_command = false;
 
 
 static uint8_t SC0BUF; /* Serial channel 0 buffer. */
+
+/* reset_memory() stores the initial I/O values through storeB, which is not
+ * the game sending a byte. */
+static bool io_resetting;
+
+/* A byte off the wire lands in SC0BUF without going through storeB, where a
+ * write means the game is sending one. */
+void ngp_sc0buf_received(uint8_t data)
+{
+   SC0BUF = data;
+}
 uint8_t COMMStatus;
 
 /* In very very very rare conditions(like on embedded platforms with 
@@ -188,6 +200,9 @@ static void *translate_address_write(uint32 address)
 
 uint8_t loadB(uint32 address)
 {
+   if ((address & 0xFFFFFF) == 0xB2)
+      return ngp_link_cts();
+
    uint8_t *ptr;
    address &= 0xFFFFFF;
 
@@ -316,6 +331,7 @@ void storeB(uint32 address, uint8_t data)
    uint8_t* ptr;
    address &= 0xFFFFFF;
 
+
    if(address >= 0x8000 && address <= 0xbfff)
    {
       ngpgfx_write8(NGPGfx, address, data);
@@ -342,11 +358,14 @@ void storeB(uint32 address, uint8_t data)
    {
       case 0x50:
          SC0BUF = data;
+         if (!io_resetting)
+            ngp_link_tx_direct(data);
          return;
       case 0x6f: /* Watchdog timer */
          return;
       case 0xb2: /* Comm */
          COMMStatus = data & 1;
+         ngp_link_set_rts(data & 1);
          return;
       case 0xb9:
          if(data == 0x55)
@@ -436,11 +455,14 @@ void storeW(uint32 address, uint16_t data)
    {
       case 0x50:
          SC0BUF = data & 0xFF;
+         if (!io_resetting)
+            ngp_link_tx_direct(data & 0xFF);
          return;
       case 0x6e: /* Watchdog timer(technically 0x6f) */
          return;
       case 0xB2: /* Comm */
          COMMStatus = data & 1;
+         ngp_link_set_rts(data & 1);
          return;
       case 0xb8:
          if((data & 0xFF00) == 0x5500)
@@ -534,8 +556,10 @@ void reset_memory(void)
 
    /* 000000 -> 000100	CPU Internal RAM (Timers/DMA/Z80) */
 
+   io_resetting = true;
    for (i = 0; i < sizeof(systemMemory); i++)
       storeB(i, systemMemory[i]);
+   io_resetting = false;
 
    /* 006C00 -> 006FFF	BIOS Workspace */
 
