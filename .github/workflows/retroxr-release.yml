@@ -1,0 +1,172 @@
+# Build the retroXR Beetle NeoPop core for Windows and Android and publish it
+# as a release, so retroXR's CoreDownloadManager can fetch it.
+#
+# This fork carries the SNK link cable: SIO0 (mednafen/ngp/link.c) joins a link
+# bus the frontend hosts through RETRO_ENVIRONMENT_GET_LINK_INTERFACE
+# (libretro/RetroArch#19454) and speaks `ngp-sio-1`. With no bus, or nothing
+# cabled, the port behaves as the stock core's does, so there is no option to
+# switch it on.
+#
+#   Windows  mednafen_ngp_libretro.dll.zip          containing mednafen_ngp_libretro.dll
+#   Android  mednafen_ngp_libretro_android.so.zip   containing mednafen_ngp_libretro_android.so
+#
+# The release must NOT be a prerelease: the download URL is the /releases/latest/
+# form, and GitHub's `latest` skips prereleases.
+
+name: retroXR core release
+
+on:
+  push:
+    tags:
+      - 'retroxr-mednafen_ngp-libretro-v*'
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Branch, tag or SHA to build'
+        required: true
+        default: 'retroxr'
+      tag:
+        description: 'Release tag to publish as (leave blank to build without publishing)'
+        required: false
+        default: ''
+
+jobs:
+  windows:
+    name: Windows x86_64 (mingw-w64)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y g++-mingw-w64-x86-64 make zip
+
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+          ref: ${{ github.event.inputs.ref || github.ref }}
+
+      # platform=win is passed explicitly and never inferred. The makefile picks
+      # its platform from uname, so building for Windows from a Linux host would
+      # otherwise silently produce a unix target.
+      - name: Build
+        run: |
+          make platform=win \
+            CC=x86_64-w64-mingw32-gcc CXX=x86_64-w64-mingw32-g++ \
+            -j$(nproc)
+
+      - name: Package
+        run: |
+          mapfile -t hits < <(find . -maxdepth 2 -name 'mednafen_ngp_libretro.dll' -type f)
+          if [ "${#hits[@]}" -ne 1 ]; then
+            echo "expected exactly one mednafen_ngp_libretro.dll, found ${#hits[@]}:"
+            printf '  %s\n' "${hits[@]}"
+            exit 1
+          fi
+          mkdir -p stage
+          cp "${hits[0]}" stage/mednafen_ngp_libretro.dll
+          (cd stage && zip -q -X ../mednafen_ngp_libretro.dll.zip mednafen_ngp_libretro.dll)
+          file stage/mednafen_ngp_libretro.dll
+          ls -lh mednafen_ngp_libretro.dll.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: mednafen_ngp_libretro.dll.zip
+          if-no-files-found: error
+
+  android:
+    name: Android arm64-v8a
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y wget unzip zip
+          # Into RUNNER_TEMP, NOT the workspace. This step runs before
+          # actions/checkout, and checkout clears the workspace it checks into --
+          # so an NDK unpacked at $PWD here exists at the end of this step and is
+          # gone by the time the build runs. The failure is a bare
+          # "ndk-build: command not found", which says nothing about why.
+          wget -q -O "$RUNNER_TEMP/ndk.zip" https://dl.google.com/android/repository/android-ndk-r27d-linux.zip
+          unzip -q "$RUNNER_TEMP/ndk.zip" -d "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/android-ndk-r27d" >> $GITHUB_PATH
+
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+          ref: ${{ github.event.inputs.ref || github.ref }}
+
+      # Application.mk says APP_ABI := all; arm64-v8a is passed on the command
+      # line so the run builds the one ABI retroXR ships and not every ABI the
+      # NDK knows.
+      - name: Build
+        run: |
+          cd jni
+          ndk-build APP_ABI=arm64-v8a -j$(nproc)
+
+      # LOCAL_MODULE is `retro`, so ndk-build emits libretro.so -- a name that
+      # says nothing about which core it is. It is renamed on the way into the
+      # zip to the name the asset advertises and the installer expects.
+      - name: Package
+        run: |
+          # libs/, not obj/. ndk-build leaves an unstripped copy in
+          # obj/local/<abi>/ and INSTALLS the deliverable to libs/<abi>/, so a
+          # search for the bare name finds two and the bigger one is the wrong
+          # one. The exactly-one check below is what turned that into a failed
+          # run rather than a core shipped with its debug info attached.
+          mapfile -t hits < <(find . -path '*/libs/arm64-v8a/*' -name 'libretro.so' -type f)
+          if [ "${#hits[@]}" -ne 1 ]; then
+            echo "expected exactly one arm64-v8a libretro.so, found ${#hits[@]}:"
+            printf '  %s\n' "${hits[@]}"
+            exit 1
+          fi
+          mkdir -p stage
+          cp "${hits[0]}" stage/mednafen_ngp_libretro_android.so
+          (cd stage && zip -q -X ../mednafen_ngp_libretro_android.so.zip mednafen_ngp_libretro_android.so)
+          file stage/mednafen_ngp_libretro_android.so
+          ls -lh mednafen_ngp_libretro_android.so.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android
+          path: mednafen_ngp_libretro_android.so.zip
+          if-no-files-found: error
+
+  publish:
+    name: Publish release
+    needs: [windows, android]
+    if: github.event_name == 'push' || github.event.inputs.tag != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          ls -lh dist
+          cat > notes.md <<EOF
+          Beetle NeoPop libretro core built for retroXR, from \`$GITHUB_SHA\`.
+
+          Windows x86_64 and Android arm64-v8a. The source for these binaries is
+          this tag.
+
+          Over the stock buildbot build this carries the SNK link cable, spoken as
+          \`ngp-sio-1\` over a link bus the frontend hosts.
+          EOF
+          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "Beetle NeoPop (retroXR build) $TAG" \
+              --notes-file notes.md
+          fi
+          gh release upload "$TAG" \
+            dist/mednafen_ngp_libretro.dll.zip \
+            dist/mednafen_ngp_libretro_android.so.zip \
+            --repo "$GITHUB_REPOSITORY" --clobber
