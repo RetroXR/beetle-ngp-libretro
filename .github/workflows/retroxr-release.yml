@@ -1,5 +1,5 @@
-# Build the retroXR Beetle NeoPop core for Windows and Android and publish it
-# as a release, so retroXR's CoreDownloadManager can fetch it.
+# Build the retroXR Beetle NeoPop core for Windows, Android, Linux and macOS
+# and publish it as a release, so retroXR's CoreDownloadManager can fetch it.
 #
 # This fork carries the SNK link cable: SIO0 (mednafen/ngp/link.c) joins a link
 # bus the frontend hosts through RETRO_ENVIRONMENT_GET_LINK_INTERFACE
@@ -7,8 +7,17 @@
 # cabled, the port behaves as the stock core's does, so there is no option to
 # switch it on.
 #
+# It also lets netplay roll a cabled pair back as one group: ngp_rtc=deterministic
+# runs the clock on emulated time, ngp_fixed_frames makes every retro_run exactly
+# 102485 ticks so both units end frame N on one bus tick, and the savestate
+# carries the Z80 IRQ line, the serial registers and the whole link.
+#
 #   Windows  mednafen_ngp_libretro.dll.zip          containing mednafen_ngp_libretro.dll
 #   Android  mednafen_ngp_libretro_android.so.zip   containing mednafen_ngp_libretro_android.so
+#   Linux    mednafen_ngp_libretro.so.zip           containing mednafen_ngp_libretro.so
+#   macOS    mednafen_ngp_libretro_arm64.dylib.zip
+#            mednafen_ngp_libretro_x86_64.dylib.zip
+#              each containing mednafen_ngp_libretro.dylib
 #
 # The release must NOT be a prerelease: the download URL is the /releases/latest/
 # form, and GitHub's `latest` skips prereleases.
@@ -132,9 +141,101 @@ jobs:
           path: mednafen_ngp_libretro_android.so.zip
           if-no-files-found: error
 
+  # The oldest Ubuntu runner: a shared library loads only against a glibc at
+  # least as new as the one it was linked with.
+  linux:
+    name: Linux x86_64
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y make zip
+
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+          ref: ${{ github.event.inputs.ref || github.ref }}
+
+      - name: Build
+        run: make platform=unix -j$(nproc)
+
+      - name: Package
+        run: |
+          mapfile -t hits < <(find . -maxdepth 2 -name 'mednafen_ngp_libretro.so' -type f)
+          if [ "${#hits[@]}" -ne 1 ]; then
+            echo "expected exactly one mednafen_ngp_libretro.so, found ${#hits[@]}:"
+            printf '  %s\n' "${hits[@]}"
+            exit 1
+          fi
+          mkdir -p stage
+          cp "${hits[0]}" stage/mednafen_ngp_libretro.so
+          (cd stage && zip -q -X ../mednafen_ngp_libretro.so.zip mednafen_ngp_libretro.so)
+          file stage/mednafen_ngp_libretro.so
+          ls -lh mednafen_ngp_libretro.so.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: mednafen_ngp_libretro.so.zip
+          if-no-files-found: error
+
+  # Both architectures on one Apple Silicon runner, with the flags libretro's
+  # own osx-arm64 CI template passes: the osx branch of the makefile only
+  # applies a target triple and SDK when CROSS_COMPILE=1.
+  macos:
+    name: macOS ${{ matrix.arch }}
+    runs-on: macos-14
+    strategy:
+      matrix:
+        include:
+          - arch: arm64
+            triple: arm64-apple-macos10.15
+          - arch: x86_64
+            triple: x86_64-apple-macos10.13
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+          ref: ${{ github.event.inputs.ref || github.ref }}
+
+      - name: Build
+        run: |
+          make platform=osx CC=clang CXX=clang++ CROSS_COMPILE=1 \
+            LIBRETRO_APPLE_PLATFORM=${{ matrix.triple }} \
+            LIBRETRO_APPLE_ISYSROOT="$(xcrun --sdk macosx --show-sdk-path)" \
+            -j$(sysctl -n hw.ncpu)
+
+      - name: Package
+        run: |
+          # No mapfile: macOS's own /bin/bash is 3.2, which lacks it, and this
+          # step should not depend on which bash the runner puts first on PATH.
+          hits=$(find . -maxdepth 2 -name 'mednafen_ngp_libretro.dylib' -type f)
+          if [ "$(printf '%s\n' "$hits" | grep -c .)" -ne 1 ]; then
+            echo "expected exactly one mednafen_ngp_libretro.dylib, found:"
+            printf '  %s\n' "$hits"
+            exit 1
+          fi
+          lib="$hits"
+          lipo -info "$lib"
+          if [ "$(lipo -archs "$lib")" != "${{ matrix.arch }}" ]; then
+            echo "$lib is not ${{ matrix.arch }}"
+            exit 1
+          fi
+          mkdir -p stage
+          cp "$lib" stage/mednafen_ngp_libretro.dylib
+          (cd stage && zip -q -X ../mednafen_ngp_libretro_${{ matrix.arch }}.dylib.zip mednafen_ngp_libretro.dylib)
+          ls -lh mednafen_ngp_libretro_${{ matrix.arch }}.dylib.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-${{ matrix.arch }}
+          path: mednafen_ngp_libretro_${{ matrix.arch }}.dylib.zip
+          if-no-files-found: error
+
   publish:
     name: Publish release
-    needs: [windows, android]
+    needs: [windows, android, linux, macos]
     if: github.event_name == 'push' || github.event.inputs.tag != ''
     runs-on: ubuntu-latest
     permissions:
@@ -154,11 +255,19 @@ jobs:
           cat > notes.md <<EOF
           Beetle NeoPop libretro core built for retroXR, from \`$GITHUB_SHA\`.
 
-          Windows x86_64 and Android arm64-v8a. The source for these binaries is
-          this tag.
+          Windows x86_64, Android arm64-v8a, Linux x86_64 and macOS arm64 and
+          x86_64. The source for these binaries is this tag.
 
           Over the stock buildbot build this carries the SNK link cable, spoken as
           \`ngp-sio-1\` over a link bus the frontend hosts.
+
+          It also lets netplay roll a cabled pair back together. The
+          ngp_rtc=deterministic option runs the real-time clock on emulated time
+          from 2000-01-01, so peers booted apart agree from the first frame.
+          ngp_fixed_frames makes every frame exactly 102485 ticks, so two cabled
+          units end frame N on one bus tick and can be stopped, captured and
+          restored as a group. The savestate now carries the Z80 IRQ line
+          (upstream never saved it), the serial registers and the whole link.
           EOF
           if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release create "$TAG" \
@@ -169,4 +278,7 @@ jobs:
           gh release upload "$TAG" \
             dist/mednafen_ngp_libretro.dll.zip \
             dist/mednafen_ngp_libretro_android.so.zip \
+            dist/mednafen_ngp_libretro.so.zip \
+            dist/mednafen_ngp_libretro_arm64.dylib.zip \
+            dist/mednafen_ngp_libretro_x86_64.dylib.zip \
             --repo "$GITHUB_REPOSITORY" --clobber
