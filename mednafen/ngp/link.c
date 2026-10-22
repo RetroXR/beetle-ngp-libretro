@@ -25,7 +25,7 @@
 extern retro_log_printf_t log_cb;
 
 /* Wire name. A peer with any other id is never joined to this one. */
-#define LINK_PROTOCOL "ngp-sio-1"
+#define LINK_PROTOCOL "ngp-sio"
 
 /* The TLCS-900H's 6.144 MHz, the unit TLCS900h_interpret() counts in (515 a
  * scanline, 199 lines, 59.95 frames). */

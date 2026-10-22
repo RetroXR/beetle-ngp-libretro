@@ -3,7 +3,7 @@
 #
 # This fork carries the SNK link cable: SIO0 (mednafen/ngp/link.c) joins a link
 # bus the frontend hosts through RETRO_ENVIRONMENT_GET_LINK_INTERFACE
-# (libretro/RetroArch#19454) and speaks `ngp-sio-1`. With no bus, or nothing
+# (libretro/RetroArch#19454) and speaks `ngp-sio`. With no bus, or nothing
 # cabled, the port behaves as the stock core's does, so there is no option to
 # switch it on.
 #
@@ -259,7 +259,7 @@ jobs:
           x86_64. The source for these binaries is this tag.
 
           Over the stock buildbot build this carries the SNK link cable, spoken as
-          \`ngp-sio-1\` over a link bus the frontend hosts.
+          \`ngp-sio\` over a link bus the frontend hosts.
 
           It also lets netplay roll a cabled pair back together. The
           ngp_rtc=deterministic option runs the real-time clock on emulated time
