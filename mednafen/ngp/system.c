@@ -10,9 +10,6 @@
 
 #include <streams/file_stream.h>
 
-bool system_comms_read(uint8_t* buffer) { return 0; }
-bool system_comms_poll(uint8_t* buffer) { return 0; }
-void system_comms_write(uint8_t data) { }
 
 bool system_io_flash_read(uint8_t *s, uint32_t len)
 {

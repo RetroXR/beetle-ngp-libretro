@@ -79,6 +79,7 @@ static char retro_save_directory[1024];
 #include "mednafen/ngp/bios.h"
 #include "mednafen/ngp/flash.h"
 #include "mednafen/ngp/system.h"
+#include "mednafen/ngp/link.h"
 
 extern uint8 CPUExRAM[16384];
 
@@ -109,6 +110,7 @@ static void Emulate(EmulateSpecStruct *espec, int16_t *sound_buf)
    {
       int32 timetime = (uint8)TLCS900h_interpret();
       MeowMeow |= updateTimers(espec->surface, timetime);
+      ngp_link_ran(timetime);
       z80_runtime += timetime;
 
       while(z80_runtime > 0)
@@ -323,6 +325,8 @@ void StateAction(StateMem *sm, int load, int data_only)
    int_timer_StateAction(sm, load, data_only);
    BIOSHLE_StateAction(sm, load, data_only);
    FLASH_StateAction(sm, load, data_only);
+   ngp_sio_StateAction(sm, load, data_only);
+   ngp_link_StateAction(sm, load, data_only);
 
    if(load)
    {
@@ -432,11 +436,14 @@ void retro_init(void)
       libretro_supports_bitmasks = true;
 
    check_system_specs();
+
+   ngp_link_init(environ_cb);
 }
 
 void retro_reset(void)
 {
    neopop_reset();
+   ngp_link_reset();
 }
 
 bool retro_load_game_special(unsigned a, const struct retro_game_info *b, size_t c)
@@ -504,11 +511,14 @@ bool retro_load_game(const struct retro_game_info *info)
 
    update_video = false;
 
+   ngp_link_start();
+
    return true;
 }
 
 void retro_unload_game(void)
 {
+   ngp_link_stop();
    MDFN_FlushGameCheats();
 
    rom_unload(persistent_data);
@@ -640,6 +650,7 @@ void retro_get_system_av_info(struct retro_system_av_info *info)
 
 void retro_deinit(void)
 {
+   ngp_link_stop();
    if (surf)
    {
       if (surf->pixels)

@@ -13,6 +13,7 @@
  *---------------------------------------------------------------------------
  */
 
+#include "link.h"
 #include <string.h>
 
 #include "../state.h"
@@ -279,12 +280,23 @@ bool updateTimers(void *data, int cputicks)
 
       timer_hint -= TIMER_HINT_RATE;	/* Start of next scanline */
 
-      /* Comms. Read interrupt */
-      if ((COMMStatus & 1) == 0 && system_comms_poll(&_data))
+      /* Comms. Read interrupt, once per byte received: a game's own handler
+       * reads SC0BUF and expects the next interrupt to carry the next byte. The
+       * byte stays queued for the BIOS calls, which is where the real BIOS's
+       * own handler would have put it. */
+      if ((COMMStatus & 1) == 0 && ngp_link_arrived(&_data))
       {
-         storeB(0x50, _data);
-         TestIntHDMA(12, 0x19);
+         ngp_sc0buf_received(_data);
+         TestIntHDMA(11, 0x18);   /* INTRX0: vector 0x6FE4 */
       }
+
+      /* INTTX0 once a byte a game wrote to SC0BUF has left the wire. NeoPop
+       * had the two serial interrupts the wrong way round (11 is INTRX0, 12
+       * INTTX0), which only a game driving SIO0 from its own handlers notices
+       * -- KOF R-1, R-2 and SNK vs. Capcom do. */
+      if (ngp_link_tx_done())
+         TestIntHDMA(12, 0x19);
+
    }
 
    /* Tick the Clock Generator */

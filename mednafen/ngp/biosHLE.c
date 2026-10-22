@@ -13,6 +13,7 @@
  *---------------------------------------------------------------------------
  */
 
+#include "link.h"
 #include <string.h>
 
 #include <boolean.h>
@@ -304,7 +305,7 @@ void iBIOSHLE(void)
          //Restore $PC after BIOS-HLE instruction
          pc = pop32();
 
-         TestIntHDMA(11, 0x18);
+         TestIntHDMA(12, 0x19);
 
          //Always COM_BUF_OK because the write call always succeeds.
          rCodeB(0x30) = 0x0;			//RA3 = COM_BUF_OK
@@ -323,8 +324,8 @@ void iBIOSHLE(void)
                pc = pop32();
 
                //Comms. Read interrupt
-               storeB(0x50, data);
-               TestIntHDMA(12, 0x19);
+               ngp_sc0buf_received(data);
+               TestIntHDMA(11, 0x18);
 
                return;
             }
@@ -356,7 +357,7 @@ void iBIOSHLE(void)
       case 0xFF2D4E:
 
          // Receive Buffer Count
-         rCodeW(0x30) = system_comms_read(NULL);
+         rCodeW(0x30) = ngp_link_waiting();
 
          break;
 
@@ -375,7 +376,7 @@ void iBIOSHLE(void)
             rCodeB(0x35)--;	//RB3 = Count Left
          }
 
-         TestIntHDMA(11, 0x18);
+         TestIntHDMA(12, 0x19);
          return;
       case VECT_COMGETBUFDATA:
 	  {
@@ -394,8 +395,8 @@ void iBIOSHLE(void)
             rCodeB(0x35)--;	/* RB3 = Count Left */
 
             /* Comms. Read interrupt */
-            storeB(0x50, data);
-            TestIntHDMA(12, 0x19);
+            ngp_sc0buf_received(data);
+            TestIntHDMA(11, 0x18);
             return;
          }
 
